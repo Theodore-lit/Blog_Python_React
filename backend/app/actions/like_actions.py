@@ -4,6 +4,7 @@ LikeActions — logique métier pour la ressource Like.
 Flux toggle :
   Route → LikeActions → [LikePolicy si suppression] → LikeRepository → PostgreSQL
                       → audit_service (après l'opération)
+                      → websocket_manager.broadcast_to_post (après toggle)
 
 Logique toggle (documentée ici, dans l'Action — pas dans la Route) :
   - Si le like n'existe pas  → on le crée   (audit CREATE)
@@ -13,7 +14,13 @@ Logique toggle (documentée ici, dans l'Action — pas dans la Route) :
 Règle non négociable :
   La vérification de policy (can_delete_like) est appelée EN PREMIÈRE LIGNE
   du bloc de suppression, avant tout appel Repository.
+
+Événements WebSocket émis :
+  - like.created → toggle résulte en ajout   (broadcast_to_post)
+  - like.deleted → toggle résulte en retrait (broadcast_to_post)
 """
+
+import asyncio
 
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
@@ -23,6 +30,7 @@ from app.models.user import User
 from app.policies.like_policy import can_delete_like
 from app.repositories.like_repository import LikeRepository
 from services.audit_service import ACTION_CREATE, ACTION_DELETE, log_action
+from services.websocket_manager import manager
 
 
 def toggle_like(
@@ -73,6 +81,19 @@ def toggle_like(
         liked = False
 
     likes_count = repo.count_by_post(post_id)
+
+    # --- Diffusion WebSocket ---
+    event_type = "like.created" if liked else "like.deleted"
+    event = {
+        "type": event_type,
+        "post_id": post_id,
+        "payload": {
+            "liked": liked,
+            "likes_count": likes_count,
+        },
+    }
+    asyncio.create_task(manager.broadcast_to_post(post_id, event))
+
     return liked, likes_count
 
 

@@ -4,6 +4,7 @@ CommentActions — logique métier pour la ressource Comment.
 Flux :
   Route → CommentActions → [CommentPolicy] → CommentRepository → PostgreSQL
                          → audit_service (après l'opération)
+                         → websocket_manager.broadcast_to_post (après create/delete)
 
 Règle non négociable :
   Toute Action qui MODIFIE un commentaire vérifie la Policy EN PREMIÈRE LIGNE.
@@ -11,7 +12,15 @@ Règle non négociable :
 Décision produit (rappel, cohérent avec comment_policy.py) :
   - Peuvent supprimer un commentaire : son auteur OU l'auteur du post parent.
   - Peuvent modifier un commentaire : son auteur uniquement.
+
+Événements WebSocket émis :
+  - comment.created  → après création réussie  (broadcast_to_post)
+  - comment.deleted  → après suppression réussie (broadcast_to_post)
+  La mise à jour (update) n'est pas diffusée en temps réel : décision produit
+  intentionnelle (impact faible, évite la complexité de diff côté client).
 """
+
+import asyncio
 
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
@@ -27,6 +36,7 @@ from services.audit_service import (
     ACTION_UPDATE,
     log_action,
 )
+from services.websocket_manager import manager
 
 
 def _get_comment_or_404(db: Session, comment_id: int) -> Comment:
@@ -66,6 +76,25 @@ def create_comment(
         user_id=current_user.id,
         ip_address=ip_address,
     )
+
+    # --- Diffusion WebSocket ---
+    # Construit le message AVANT tout retour pour avoir l'objet complet.
+    # asyncio.create_task() planifie la coroutine sans bloquer la réponse HTTP.
+    event = {
+        "type": "comment.created",
+        "post_id": post_id,
+        "payload": {
+            "id": comment.id,
+            "content": comment.content,
+            "author": {
+                "id": current_user.id,
+                "username": current_user.username,
+            },
+            "created_at": comment.created_at.isoformat(),
+        },
+    }
+    asyncio.create_task(manager.broadcast_to_post(post_id, event))
+
     return comment
 
 
@@ -114,6 +143,9 @@ def delete_comment(
             detail="Vous n'êtes pas autorisé à supprimer ce commentaire.",
         )
 
+    # Capture post_id avant suppression (l'objet sera détaché après delete)
+    post_id = comment.post_id
+
     # Audit avant delete
     log_action(
         db=db,
@@ -126,3 +158,11 @@ def delete_comment(
 
     repo = CommentRepository(db)
     repo.delete(comment)
+
+    # --- Diffusion WebSocket ---
+    event = {
+        "type": "comment.deleted",
+        "post_id": post_id,
+        "payload": {"id": comment_id},
+    }
+    asyncio.create_task(manager.broadcast_to_post(post_id, event))

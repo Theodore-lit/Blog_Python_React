@@ -12,6 +12,7 @@ from app.routes.api.comments  import comments_router
 from app.routes.api.likes     import router as likes_router
 from app.routes.api.favorites import posts_router as favorites_posts_router
 from app.routes.api.favorites import me_router
+from app.routes.api.websocket import router as ws_router
 
 # ---------------------------------------------------------------------------
 # Application
@@ -33,6 +34,7 @@ app.include_router(comments_router)          # PUT/DELETE /api/comments/{id}
 app.include_router(likes_router)             # POST /api/posts/{id}/like  +  GET /api/posts/{id}/likes/count
 app.include_router(favorites_posts_router)   # POST /api/posts/{id}/favorite
 app.include_router(me_router)                # GET /api/me/favorites
+app.include_router(ws_router)                # WS  /api/ws/posts/{post_id}
 
 
 @app.get("/health", tags=["Health"])
